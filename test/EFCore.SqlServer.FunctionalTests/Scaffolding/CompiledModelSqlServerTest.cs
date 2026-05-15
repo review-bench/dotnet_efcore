@@ -338,6 +338,10 @@ public class CompiledModelSqlServerTest(NonSharedFixture fixture) : CompiledMode
         Assert.Equal([alternateIndex], principalBaseId.GetContainingIndexes());
     }
 
+    [ConditionalFact(typeof(SqlServerTestEnvironment), nameof(SqlServerTestEnvironment.IsJsonTypeSupported))]
+    public override Task ComplexTypes()
+        => base.ComplexTypes();
+
     protected override void BuildComplexTypesModel(ModelBuilder modelBuilder)
     {
         base.BuildComplexTypesModel(modelBuilder);
@@ -357,7 +361,8 @@ public class CompiledModelSqlServerTest(NonSharedFixture fixture) : CompiledMode
 
         modelBuilder.Entity<PrincipalDerived<DependentBase<byte?>>>(eb =>
         {
-            eb.ComplexProperty(p => p.Dependent, cb => cb.HasColumnType("nvarchar(450)"));
+            eb.ComplexProperty(p => p.Dependent, cb => cb.HasColumnType("json"));
+            eb.ComplexCollection<IList<OwnedType>, OwnedType>("ManyOwned", cb => cb.HasColumnType("json"));
         });
     }
 

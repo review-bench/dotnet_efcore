@@ -16,6 +16,7 @@ public class Index : ConventionAnnotatable, IMutableIndex, IConventionIndex, IIn
 {
     private bool? _isUnique;
     private IReadOnlyList<bool>? _isDescending;
+    private readonly IReadOnlyList<IReadOnlyList<int?>?>? _collectionIndices;
 
     private InternalIndexBuilder? _builder;
 
@@ -73,10 +74,91 @@ public class Index : ConventionAnnotatable, IMutableIndex, IConventionIndex, IIn
     /// </summary>
     public Index(
         IReadOnlyList<PropertyBase> properties,
+        IReadOnlyList<IReadOnlyList<int?>?>? collectionIndices,
+        EntityType declaringEntityType,
+        ConfigurationSource configurationSource)
+        : this(properties, declaringEntityType, configurationSource)
+        => _collectionIndices = NormalizeCollectionIndices(properties, collectionIndices);
+
+    private static IReadOnlyList<IReadOnlyList<int?>?>? NormalizeCollectionIndices(
+        IReadOnlyList<PropertyBase> properties,
+        IReadOnlyList<IReadOnlyList<int?>?>? collectionIndices)
+    {
+        if (collectionIndices is null)
+        {
+            return null;
+        }
+
+        if (collectionIndices.Count != properties.Count)
+        {
+            throw new ArgumentException(
+                CoreStrings.InvalidNumberOfIndexCollectionIndices(
+                    properties.Format(), collectionIndices.Count, properties.Count),
+                nameof(collectionIndices));
+        }
+
+        for (var i = 0; i < properties.Count; i++)
+        {
+            var entry = collectionIndices[i];
+            var expectedCount = CountComplexCollectionsInPath(properties[i]);
+            var actualCount = entry?.Count ?? 0;
+            if (actualCount != expectedCount)
+            {
+                throw new ArgumentException(
+                    CoreStrings.InvalidCollectionIndicesEntryLength(
+                        properties[i].Name, properties.Format(), actualCount, expectedCount),
+                    nameof(collectionIndices));
+            }
+        }
+
+        // Normalize all-null entries to a null top-level value.
+        return collectionIndices.All(static entry => entry is null) ? null : collectionIndices;
+    }
+
+    private static int CountComplexCollectionsInPath(IReadOnlyPropertyBase property)
+    {
+        var count = 0;
+        var declaringType = property.DeclaringType;
+        while (declaringType is IReadOnlyComplexType complexType)
+        {
+            if (complexType.ComplexProperty.IsCollection)
+            {
+                count++;
+            }
+
+            declaringType = complexType.ComplexProperty.DeclaringType;
+        }
+
+        return count;
+    }
+
+    /// <summary>
+    ///     This is an internal API that supports the Entity Framework Core infrastructure and not subject to
+    ///     the same compatibility standards as public APIs. It may be changed or removed without notice in
+    ///     any release. You should only use it directly in your code with extreme caution and knowing that
+    ///     doing so can result in application failures when updating to a new Entity Framework Core release.
+    /// </summary>
+    public Index(
+        IReadOnlyList<PropertyBase> properties,
         string name,
         EntityType declaringEntityType,
         ConfigurationSource configurationSource)
         : this(properties, declaringEntityType, configurationSource)
+        => Name = name;
+
+    /// <summary>
+    ///     This is an internal API that supports the Entity Framework Core infrastructure and not subject to
+    ///     the same compatibility standards as public APIs. It may be changed or removed without notice in
+    ///     any release. You should only use it directly in your code with extreme caution and knowing that
+    ///     doing so can result in application failures when updating to a new Entity Framework Core release.
+    /// </summary>
+    public Index(
+        IReadOnlyList<PropertyBase> properties,
+        IReadOnlyList<IReadOnlyList<int?>?>? collectionIndices,
+        string name,
+        EntityType declaringEntityType,
+        ConfigurationSource configurationSource)
+        : this(properties, collectionIndices, declaringEntityType, configurationSource)
         => Name = name;
 
     /// <summary>
@@ -295,6 +377,56 @@ public class Index : ConventionAnnotatable, IMutableIndex, IConventionIndex, IIn
 
     private void UpdateIsDescendingConfigurationSource(ConfigurationSource configurationSource)
         => _isDescendingConfigurationSource = configurationSource.Max(_isDescendingConfigurationSource);
+
+    /// <summary>
+    ///     This is an internal API that supports the Entity Framework Core infrastructure and not subject to
+    ///     the same compatibility standards as public APIs. It may be changed or removed without notice in
+    ///     any release. You should only use it directly in your code with extreme caution and knowing that
+    ///     doing so can result in application failures when updating to a new Entity Framework Core release.
+    /// </summary>
+    public virtual IReadOnlyList<IReadOnlyList<int?>?>? CollectionIndices
+    {
+        [DebuggerStepThrough]
+        get => _collectionIndices;
+    }
+
+    /// <summary>
+    ///     This is an internal API that supports the Entity Framework Core infrastructure and not subject to
+    ///     the same compatibility standards as public APIs. It may be changed or removed without notice in
+    ///     any release. You should only use it directly in your code with extreme caution and knowing that
+    ///     doing so can result in application failures when updating to a new Entity Framework Core release.
+    /// </summary>
+    public static bool CollectionIndicesEqual(
+        IReadOnlyList<IReadOnlyList<int?>?>? left,
+        IReadOnlyList<IReadOnlyList<int?>?>? right)
+    {
+        if (ReferenceEquals(left, right))
+        {
+            return true;
+        }
+
+        if (left is null || right is null || left.Count != right.Count)
+        {
+            return false;
+        }
+
+        for (var i = 0; i < left.Count; i++)
+        {
+            var l = left[i];
+            var r = right[i];
+            if (ReferenceEquals(l, r))
+            {
+                continue;
+            }
+
+            if (l is null || r is null || !l.SequenceEqual(r))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
 
     /// <summary>
     ///     Runs the conventions when an annotation was set or removed.

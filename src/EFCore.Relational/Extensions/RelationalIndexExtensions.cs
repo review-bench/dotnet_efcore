@@ -69,11 +69,12 @@ public static class RelationalIndexExtensions
             return null;
         }
 
+        var nameSegments = GetJsonPathNames(index) ?? columnNames;
         var baseName = new StringBuilder()
             .Append("IX_")
             .Append(tableName)
             .Append('_')
-            .AppendJoin(columnNames, "_")
+            .AppendJoin(nameSegments, "_")
             .ToString();
 
         return Uniquifier.Truncate(baseName, index.DeclaringEntityType.Model.GetMaxIdentifierLength());
@@ -131,14 +132,65 @@ public static class RelationalIndexExtensions
             return rootIndex.GetDatabaseName(storeObject);
         }
 
+        var nameSegments = GetJsonPathNames(index) ?? columnNames;
         var baseName = new StringBuilder()
             .Append("IX_")
             .Append(storeObject.Name)
             .Append('_')
-            .AppendJoin(columnNames, "_")
+            .AppendJoin(nameSegments, "_")
             .ToString();
 
         return Uniquifier.Truncate(baseName, index.DeclaringEntityType.Model.GetMaxIdentifierLength());
+    }
+
+    private static IReadOnlyList<string>? GetJsonPathNames(IReadOnlyIndex index)
+    {
+        // For an index on properties contained inside a JSON-mapped complex type, the index covers
+        // a single JSON container column, so naming purely by column would produce ambiguous default
+        // names when multiple JSON-path indexes share a column. Use the property path through the
+        // complex-type chain (e.g. "Items_Value") instead so each path gets a distinct default name.
+        var segments = new List<string>();
+        foreach (var property in index.Properties)
+        {
+            switch (property)
+            {
+                case IReadOnlyProperty scalar
+                    when scalar.DeclaringType is IReadOnlyComplexType complexType && complexType.IsMappedToJson():
+                {
+                    var stack = new Stack<string>();
+                    stack.Push(scalar.Name);
+                    IReadOnlyTypeBase current = scalar.DeclaringType;
+                    while (current is IReadOnlyComplexType ct)
+                    {
+                        stack.Push(ct.ComplexProperty.Name);
+                        current = ct.ComplexProperty.DeclaringType;
+                    }
+
+                    segments.AddRange(stack);
+                    break;
+                }
+
+                case IReadOnlyComplexProperty { ComplexType: var ct } when ct.IsMappedToJson():
+                {
+                    var stack = new Stack<string>();
+                    stack.Push(((IReadOnlyComplexProperty)property).Name);
+                    IReadOnlyTypeBase current = ((IReadOnlyComplexProperty)property).DeclaringType;
+                    while (current is IReadOnlyComplexType parentCt)
+                    {
+                        stack.Push(parentCt.ComplexProperty.Name);
+                        current = parentCt.ComplexProperty.DeclaringType;
+                    }
+
+                    segments.AddRange(stack);
+                    break;
+                }
+
+                default:
+                    return null;
+            }
+        }
+
+        return segments;
     }
 
     /// <summary>

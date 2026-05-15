@@ -1,6 +1,7 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.Globalization;
 using System.Text;
 using Microsoft.EntityFrameworkCore.Internal;
 using Microsoft.EntityFrameworkCore.Metadata.Internal;
@@ -830,7 +831,10 @@ public class CSharpSnapshotGenerator : ICSharpSnapshotGenerator
         // Note - method names below are meant to be hard-coded
         // because old snapshot files will fail if they are changed
 
-        var indexProperties = string.Join(", ", index.Properties.Select(p => Code.Literal(p.Name)));
+        var collectionIndices = index.CollectionIndices;
+        var indexProperties = string.Join(
+            ", ",
+            index.Properties.Select((p, i) => Code.Literal(BuildIndexPropertyPath(p, collectionIndices?[i]))));
         var indexBuilderName = $"{entityTypeBuilderName}.HasIndex("
             + (index.Name is null
                 ? indexProperties
@@ -861,6 +865,40 @@ public class CSharpSnapshotGenerator : ICSharpSnapshotGenerator
         }
 
         GenerateIndexAnnotations(indexBuilderName, index, stringBuilder);
+    }
+
+    private static string BuildIndexPropertyPath(IPropertyBase property, IReadOnlyList<int?>? collectionIndices)
+    {
+        // For a property declared directly on the entity, just use its name.
+        if (property.DeclaringType is IEntityType)
+        {
+            return property.Name;
+        }
+
+        // Otherwise walk up through the enclosing complex types, emitting `Name`, `Name[]`, or `Name[n]`
+        // segments depending on each segment's collection-ness and any per-leaf collection-index.
+        var segments = new List<string> { property.Name };
+        var collectionSegmentIndex = (collectionIndices?.Count ?? 0) - 1;
+        var declaringType = property.DeclaringType;
+        while (declaringType is IComplexType complexType)
+        {
+            var complexProperty = complexType.ComplexProperty;
+            var segment = complexProperty.Name;
+            if (complexProperty.IsCollection)
+            {
+                var indexEntry = collectionIndices?[collectionSegmentIndex];
+                collectionSegmentIndex--;
+                segment += indexEntry is null
+                    ? "[]"
+                    : "[" + indexEntry.Value.ToString(CultureInfo.InvariantCulture) + "]";
+            }
+
+            segments.Add(segment);
+            declaringType = complexProperty.DeclaringType;
+        }
+
+        segments.Reverse();
+        return string.Join(".", segments);
     }
 
     /// <summary>

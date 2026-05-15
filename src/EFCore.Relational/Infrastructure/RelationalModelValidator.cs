@@ -2683,6 +2683,82 @@ public class RelationalModelValidator(
         base.ValidateIndex(index, logger);
 
         ValidateIndexPropertyMapping(index, logger);
+        ValidateJsonPathIndexSingleContainer(index);
+    }
+
+    private static void ValidateJsonPathIndexSingleContainer(IIndex index)
+    {
+        if (index.CollectionIndices is null)
+        {
+            return;
+        }
+
+        string? firstContainer = null;
+        for (var i = 0; i < index.Properties.Count; i++)
+        {
+            var property = index.Properties[i];
+
+            // Only properties mapped inside a JSON container matter here. Mixed JSON / non-JSON indexes
+            // are rejected earlier by ValidateIndexPropertyMapping.
+            var container = property.DeclaringType is IReadOnlyComplexType complexType && complexType.IsMappedToJson()
+                ? complexType.GetContainerColumnName()
+                : property is IReadOnlyComplexProperty complexProperty && complexProperty.ComplexType.IsMappedToJson()
+                    ? complexProperty.ComplexType.GetContainerColumnName()
+                    : null;
+
+            if (container is null)
+            {
+                // Not a JSON-contained property. If this position carries a non-null collection-indices
+                // entry (i.e., the path traverses a complex collection but doesn't end in JSON), the
+                // index identity points at a JSON path that has no JSON container — that's invalid.
+                if (index.CollectionIndices[i] is not null)
+                {
+                    throw new InvalidOperationException(
+                        RelationalStrings.JsonPathIndexPropertyMissingJsonColumn(
+                            index.Properties.Format(),
+                            index.DeclaringEntityType.DisplayName(),
+                            property.Name));
+                }
+
+                continue;
+            }
+
+            if (firstContainer is null)
+            {
+                firstContainer = container;
+            }
+            else if (!string.Equals(firstContainer, container, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    RelationalStrings.JsonPathIndexPropertiesInDifferentJsonColumns(
+                        index.Properties.Format(),
+                        index.DeclaringEntityType.DisplayName(),
+                        firstContainer,
+                        container));
+            }
+        }
+    }
+
+    /// <inheritdoc />
+    protected override void ValidateIndexProperty(
+        IIndex index,
+        IPropertyBase property,
+        IDiagnosticsLogger<DbLoggerCategory.Model.Validation> logger)
+    {
+        // A JSON-mapped leaf inside a complex collection is valid only when the index carries
+        // per-leaf collection indices identifying which elements to index (i.e., a JSON-path index).
+        // Without those, defer to the base validator which rejects indexes that traverse a collection.
+        var inJsonComplex = (property is IReadOnlyComplexProperty complexProperty
+                && complexProperty.ComplexType.IsMappedToJson())
+            || (property.DeclaringType is IReadOnlyComplexType complexType
+                && complexType.IsMappedToJson());
+
+        if (inJsonComplex && index.CollectionIndices is not null)
+        {
+            return;
+        }
+
+        base.ValidateIndexProperty(index, property, logger);
     }
 
     /// <inheritdoc />
@@ -2691,16 +2767,6 @@ public class RelationalModelValidator(
         IReadOnlyList<IComplexProperty> complexProperties,
         IDiagnosticsLogger<DbLoggerCategory.Model.Validation> logger)
     {
-        var complexCollectionProperty = complexProperties.FirstOrDefault(cp => cp.IsCollection);
-        if (complexCollectionProperty != null)
-        {
-            throw new InvalidOperationException(
-                CoreStrings.IndexOnComplexCollection(
-                    index.Properties.Format(),
-                    index.DeclaringEntityType.DisplayName(),
-                    complexCollectionProperty.Name));
-        }
-
         var nonJsonComplexProperty = complexProperties.FirstOrDefault(cp => !cp.ComplexType.IsMappedToJson());
         if (nonJsonComplexProperty != null)
         {
@@ -2766,7 +2832,6 @@ public class RelationalModelValidator(
 
                 case IReadOnlyComplexProperty complexProperty:
                 {
-                    Check.DebugAssert(!complexProperty.IsCollection, "Collections of complex properties must not appear in indexes at this point.");
                     Check.DebugAssert(complexProperty.ComplexType.IsMappedToJson(), "Complex properties in indexes must be mapped to JSON at this point.");
 
                     if (complexProperty.DeclaringType is IReadOnlyComplexType declaringComplexType

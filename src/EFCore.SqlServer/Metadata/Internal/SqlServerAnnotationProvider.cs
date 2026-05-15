@@ -170,6 +170,11 @@ public class SqlServerAnnotationProvider(RelationalAnnotationProviderDependencie
     /// </summary>
     public override IEnumerable<IAnnotation> For(ITableIndex index, bool designTime)
     {
+        foreach (var annotation in base.For(index, designTime))
+        {
+            yield return annotation;
+        }
+
         if (!designTime)
         {
             yield break;

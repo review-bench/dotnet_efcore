@@ -100,7 +100,9 @@ public partial class CSharpMigrationsGeneratorTest : CSharpMigrationsGeneratorTe
             RelationalAnnotationNames.ContainerColumnType,
             RelationalAnnotationNames.StoreType,
             RelationalAnnotationNames.UseNamedDefaultConstraints,
-            RelationalAnnotationNames.IsForeignKeyExcludedFromMigrations
+            RelationalAnnotationNames.IsForeignKeyExcludedFromMigrations,
+            RelationalAnnotationNames.JsonIndex,
+            RelationalAnnotationNames.JsonIndexPaths
         };
 
         // Add a line here if the code generator is supposed to handle this annotation
@@ -259,7 +261,9 @@ public partial class CSharpMigrationsGeneratorTest : CSharpMigrationsGeneratorTe
             RelationalAnnotationNames.JsonPropertyName,
             RelationalAnnotationNames.StoreType,
             RelationalAnnotationNames.UseNamedDefaultConstraints,
-            RelationalAnnotationNames.IsForeignKeyExcludedFromMigrations
+            RelationalAnnotationNames.IsForeignKeyExcludedFromMigrations,
+            RelationalAnnotationNames.JsonIndex,
+            RelationalAnnotationNames.JsonIndexPaths
         };
 
         var columnMapping = $@"{_nl}.{nameof(RelationalPropertyBuilderExtensions.HasColumnType)}(""default_int_mapping"")";

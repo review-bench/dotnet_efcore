@@ -7507,6 +7507,322 @@ partial class Snapshot : ModelSnapshot
                 Assert.True(index.GetSortInTempDb());
             });
 
+    private class SnapshotBlog
+    {
+        public int Id { get; set; }
+        public string Title { get; set; }
+        public List<SnapshotPost> Posts { get; set; } = [];
+        public SnapshotAddress Owner { get; set; }
+    }
+
+    private class SnapshotPost
+    {
+        public string Title { get; set; }
+        public int Rating { get; set; }
+    }
+
+    private class SnapshotAddress
+    {
+        public string City { get; set; }
+        public string Country { get; set; }
+    }
+
+    [ConditionalFact]
+    public void Snapshot_emits_dotted_path_for_index_through_complex_property()
+        => Test(
+            b => b.Entity<SnapshotBlog>(eb =>
+            {
+                eb.Property(e => e.Title);
+                eb.ComplexProperty(e => e.Owner, cb =>
+                {
+                    cb.Property(a => a.City);
+                    cb.Property(a => a.Country);
+                    cb.ToJson();
+                });
+                eb.ComplexCollection(e => e.Posts, cb =>
+                {
+                    cb.Property(p => p.Title);
+                    cb.Property(p => p.Rating);
+                    cb.ToJson();
+                });
+                eb.HasIndex(e => e.Owner.City);
+            }),
+            """b.HasIndex("Owner.City")""",
+            model => Assert.Equal(
+                "City",
+                Assert.Single(
+                    model.FindEntityType(typeof(SnapshotBlog)).GetIndexes(),
+                    i => i.CollectionIndices is null).Properties.Single().Name),
+            fullSnapshot: false);
+
+    [ConditionalFact]
+    public void Snapshot_emits_empty_brackets_for_index_through_complex_collection()
+        => Test(
+            b => b.Entity<SnapshotBlog>(eb =>
+            {
+                eb.Property(e => e.Title);
+                eb.ComplexProperty(e => e.Owner, cb =>
+                {
+                    cb.Property(a => a.City);
+                    cb.Property(a => a.Country);
+                    cb.ToJson();
+                });
+                eb.ComplexCollection(e => e.Posts, cb =>
+                {
+                    cb.Property(p => p.Title);
+                    cb.Property(p => p.Rating);
+                    cb.ToJson();
+                });
+                eb.HasIndex(e => e.Posts.Select(p => p.Title));
+            }),
+            """b.HasIndex("Posts[].Title")""",
+            model =>
+            {
+                var index = model.FindEntityType(typeof(SnapshotBlog)).GetIndexes().Single();
+                Assert.Equal("Title", index.Properties.Single().Name);
+                Assert.Equal(new int?[] { null }, Assert.Single(index.CollectionIndices));
+            },
+            fullSnapshot: false);
+
+    [ConditionalFact]
+    public void Snapshot_emits_numeric_bracket_for_index_through_complex_collection_indexer()
+        => Test(
+            b => b.Entity<SnapshotBlog>(eb =>
+            {
+                eb.Property(e => e.Title);
+                eb.ComplexProperty(e => e.Owner, cb =>
+                {
+                    cb.Property(a => a.City);
+                    cb.Property(a => a.Country);
+                    cb.ToJson();
+                });
+                eb.ComplexCollection(e => e.Posts, cb =>
+                {
+                    cb.Property(p => p.Title);
+                    cb.Property(p => p.Rating);
+                    cb.ToJson();
+                });
+                eb.HasIndex(e => e.Posts[0].Rating);
+            }),
+            """b.HasIndex("Posts[0].Rating")""",
+            model =>
+            {
+                var index = model.FindEntityType(typeof(SnapshotBlog)).GetIndexes().Single();
+                Assert.Equal("Rating", index.Properties.Single().Name);
+                Assert.Equal(new int?[] { 0 }, Assert.Single(index.CollectionIndices));
+            },
+            fullSnapshot: false);
+
+    [ConditionalFact]
+    public virtual void Index_through_complex_property_is_stored_in_snapshot()
+        => Test(
+            builder => builder.Entity<SnapshotBlog>(eb =>
+            {
+                eb.Property(e => e.Title);
+                eb.ComplexProperty(e => e.Owner, cb =>
+                {
+                    cb.Property(a => a.City);
+                    cb.Property(a => a.Country);
+                    cb.ToJson();
+                });
+                eb.ComplexCollection(e => e.Posts, cb =>
+                {
+                    cb.Property(p => p.Title);
+                    cb.Property(p => p.Rating);
+                    cb.ToJson();
+                });
+                eb.HasIndex(e => e.Owner.City);
+            }),
+            AddBoilerPlate(
+                GetHeading()
+                + """
+        modelBuilder.Entity("Microsoft.EntityFrameworkCore.Migrations.Design.CSharpMigrationsGeneratorTest+SnapshotBlog", b =>
+            {
+                b.Property<int>("Id")
+                    .ValueGeneratedOnAdd()
+                    .HasColumnType("int");
+
+                SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                b.Property<string>("Title")
+                    .HasColumnType("nvarchar(max)");
+
+                b.ComplexProperty(typeof(Dictionary<string, object>), "Owner", "Microsoft.EntityFrameworkCore.Migrations.Design.CSharpMigrationsGeneratorTest+SnapshotBlog.Owner#SnapshotAddress", b1 =>
+                    {
+                        b1.Property<string>("City");
+
+                        b1.Property<string>("Country");
+
+                        b1
+                            .ToJson("Owner")
+                            .HasColumnType("nvarchar(max)");
+                    });
+
+                b.ComplexCollection(typeof(List<Dictionary<string, object>>), "Posts", "Microsoft.EntityFrameworkCore.Migrations.Design.CSharpMigrationsGeneratorTest+SnapshotBlog.Posts#SnapshotPost", b1 =>
+                    {
+                        b1.Property<int>("Rating");
+
+                        b1.Property<string>("Title");
+
+                        b1
+                            .ToJson("Posts")
+                            .HasColumnType("nvarchar(max)");
+                    });
+
+                b.HasKey("Id");
+
+                b.HasIndex("Owner.City");
+
+                b.ToTable("SnapshotBlog", "DefaultSchema");
+            });
+""", usingCollections: true),
+            model =>
+            {
+                var index = Assert.Single(model.FindEntityType(typeof(SnapshotBlog)).GetIndexes());
+                Assert.Equal("City", index.Properties.Single().Name);
+                Assert.Null(index.CollectionIndices);
+            });
+
+    [ConditionalFact]
+    public virtual void Index_through_complex_collection_all_elements_is_stored_in_snapshot()
+        => Test(
+            builder => builder.Entity<SnapshotBlog>(eb =>
+            {
+                eb.Property(e => e.Title);
+                eb.ComplexProperty(e => e.Owner, cb =>
+                {
+                    cb.Property(a => a.City);
+                    cb.Property(a => a.Country);
+                    cb.ToJson();
+                });
+                eb.ComplexCollection(e => e.Posts, cb =>
+                {
+                    cb.Property(p => p.Title);
+                    cb.Property(p => p.Rating);
+                    cb.ToJson();
+                });
+                eb.HasIndex(e => e.Posts.Select(p => p.Title));
+            }),
+            AddBoilerPlate(
+                GetHeading()
+                + """
+        modelBuilder.Entity("Microsoft.EntityFrameworkCore.Migrations.Design.CSharpMigrationsGeneratorTest+SnapshotBlog", b =>
+            {
+                b.Property<int>("Id")
+                    .ValueGeneratedOnAdd()
+                    .HasColumnType("int");
+
+                SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                b.Property<string>("Title")
+                    .HasColumnType("nvarchar(max)");
+
+                b.ComplexProperty(typeof(Dictionary<string, object>), "Owner", "Microsoft.EntityFrameworkCore.Migrations.Design.CSharpMigrationsGeneratorTest+SnapshotBlog.Owner#SnapshotAddress", b1 =>
+                    {
+                        b1.Property<string>("City");
+
+                        b1.Property<string>("Country");
+
+                        b1
+                            .ToJson("Owner")
+                            .HasColumnType("nvarchar(max)");
+                    });
+
+                b.ComplexCollection(typeof(List<Dictionary<string, object>>), "Posts", "Microsoft.EntityFrameworkCore.Migrations.Design.CSharpMigrationsGeneratorTest+SnapshotBlog.Posts#SnapshotPost", b1 =>
+                    {
+                        b1.Property<int>("Rating");
+
+                        b1.Property<string>("Title");
+
+                        b1
+                            .ToJson("Posts")
+                            .HasColumnType("nvarchar(max)");
+                    });
+
+                b.HasKey("Id");
+
+                b.HasIndex("Posts[].Title");
+
+                b.ToTable("SnapshotBlog", "DefaultSchema");
+            });
+""", usingCollections: true),
+            model =>
+            {
+                var index = Assert.Single(model.FindEntityType(typeof(SnapshotBlog)).GetIndexes());
+                Assert.Equal("Title", index.Properties.Single().Name);
+                Assert.Equal(new int?[] { null }, Assert.Single(index.CollectionIndices!));
+            });
+
+    [ConditionalFact]
+    public virtual void Index_through_complex_collection_indexer_is_stored_in_snapshot()
+        => Test(
+            builder => builder.Entity<SnapshotBlog>(eb =>
+            {
+                eb.Property(e => e.Title);
+                eb.ComplexProperty(e => e.Owner, cb =>
+                {
+                    cb.Property(a => a.City);
+                    cb.Property(a => a.Country);
+                    cb.ToJson();
+                });
+                eb.ComplexCollection(e => e.Posts, cb =>
+                {
+                    cb.Property(p => p.Title);
+                    cb.Property(p => p.Rating);
+                    cb.ToJson();
+                });
+                eb.HasIndex(e => e.Posts[0].Rating);
+            }),
+            AddBoilerPlate(
+                GetHeading()
+                + """
+        modelBuilder.Entity("Microsoft.EntityFrameworkCore.Migrations.Design.CSharpMigrationsGeneratorTest+SnapshotBlog", b =>
+            {
+                b.Property<int>("Id")
+                    .ValueGeneratedOnAdd()
+                    .HasColumnType("int");
+
+                SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                b.Property<string>("Title")
+                    .HasColumnType("nvarchar(max)");
+
+                b.ComplexProperty(typeof(Dictionary<string, object>), "Owner", "Microsoft.EntityFrameworkCore.Migrations.Design.CSharpMigrationsGeneratorTest+SnapshotBlog.Owner#SnapshotAddress", b1 =>
+                    {
+                        b1.Property<string>("City");
+
+                        b1.Property<string>("Country");
+
+                        b1
+                            .ToJson("Owner")
+                            .HasColumnType("nvarchar(max)");
+                    });
+
+                b.ComplexCollection(typeof(List<Dictionary<string, object>>), "Posts", "Microsoft.EntityFrameworkCore.Migrations.Design.CSharpMigrationsGeneratorTest+SnapshotBlog.Posts#SnapshotPost", b1 =>
+                    {
+                        b1.Property<int>("Rating");
+
+                        b1.Property<string>("Title");
+
+                        b1
+                            .ToJson("Posts")
+                            .HasColumnType("nvarchar(max)");
+                    });
+
+                b.HasKey("Id");
+
+                b.HasIndex("Posts[0].Rating");
+
+                b.ToTable("SnapshotBlog", "DefaultSchema");
+            });
+""", usingCollections: true),
+            model =>
+            {
+                var index = Assert.Single(model.FindEntityType(typeof(SnapshotBlog)).GetIndexes());
+                Assert.Equal("Rating", index.Properties.Single().Name);
+                Assert.Equal(new int?[] { 0 }, Assert.Single(index.CollectionIndices!));
+            });
+
     #endregion
 
     #region ForeignKey

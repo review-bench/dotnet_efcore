@@ -662,6 +662,11 @@ AND [v].[is_date_correlation_view] = 0
             GetFullTextIndexes(connection, tables, tableFilterSql);
         }
 
+        if (SupportsJsonIndexes)
+        {
+            GetJsonIndexPaths(connection, tables, tableFilterSql);
+        }
+
         GetForeignKeys(connection, tables, tableFilterSql);
 
         if (SupportsTriggers)
@@ -1276,6 +1281,68 @@ FROM [sys].[fulltext_catalogs];
         }
     }
 
+    private void GetJsonIndexPaths(DbConnection connection, IReadOnlyList<DatabaseTable> tables, string tableFilter)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = $"""
+SELECT
+    SCHEMA_NAME([t].[schema_id]) AS [table_schema],
+    [t].[name] AS [table_name],
+    [i].[name] AS [index_name],
+    COL_NAME([ic].[object_id], [ic].[column_id]) AS [column_name],
+    [jip].[path]
+FROM [sys].[json_index_paths] AS [jip]
+JOIN [sys].[indexes] AS [i] ON [jip].[object_id] = [i].[object_id] AND [jip].[index_id] = [i].[index_id]
+JOIN [sys].[tables] AS [t] ON [i].[object_id] = [t].[object_id]
+JOIN [sys].[index_columns] AS [ic] ON [i].[object_id] = [ic].[object_id] AND [i].[index_id] = [ic].[index_id]
+WHERE {tableFilter}
+ORDER BY [table_schema], [table_name], [index_name], [jip].[path];
+""";
+
+        using var reader = command.ExecuteReader();
+        var indexGroups = reader.Cast<DbDataRecord>()
+            .GroupBy(r => (
+                tableSchema: r.GetValueOrDefault<string>("table_schema"),
+                tableName: r.GetFieldValue<string>("table_name"),
+                indexName: r.GetFieldValue<string>("index_name")))
+            .ToDictionary(g => g.Key, g => g.ToList());
+
+        foreach (var ((tableSchema, tableName, indexName), records) in indexGroups)
+        {
+            var table = tables.SingleOrDefault(t => t.Schema == tableSchema && t.Name == tableName);
+            if (table is null)
+            {
+                continue;
+            }
+
+            var index = table.Indexes.SingleOrDefault(i => i.Name == indexName);
+            var jsonColumn = records[0].GetValueOrDefault<string>("column_name");
+            var paths = records.Select(r => r.GetFieldValue<string>("path")).ToArray();
+            if (jsonColumn is null || table.Columns.FirstOrDefault(c => c.Name == jsonColumn) is not { } column)
+            {
+                continue;
+            }
+
+            if (index is null)
+            {
+                // JSON indexes aren't surfaced by the generic GetIndexes query: although they do
+                // have rows in sys.index_columns, those rows reference column ids that don't
+                // resolve through the inner join to sys.columns, so the join drops them.
+                // Synthesize a DatabaseIndex carrying the JSON container column and the path annotation.
+                index = new DatabaseIndex
+                {
+                    Table = table,
+                    Name = indexName,
+                    IsUnique = false
+                };
+                index.Columns.Add(column);
+                table.Indexes.Add(index);
+            }
+
+            index[RelationalAnnotationNames.JsonIndexPaths] = (jsonColumn, paths);
+        }
+    }
+
     private void GetFullTextIndexes(DbConnection connection, IReadOnlyList<DatabaseTable> tables, string tableFilter)
     {
         using var command = connection.CreateCommand();
@@ -1591,6 +1658,9 @@ ORDER BY [table_schema], [table_name], [tr].[name];
         => IsFullFeaturedEngineEdition;
 
     private bool SupportsVectorIndexes
+        => _compatibilityLevel >= 170 && IsFullFeaturedEngineEdition;
+
+    private bool SupportsJsonIndexes
         => _compatibilityLevel >= 170 && IsFullFeaturedEngineEdition;
 
     private bool SupportsViews

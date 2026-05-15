@@ -1641,10 +1641,11 @@ public class InternalEntityTypeBuilder : InternalTypeBaseBuilder, IConventionEnt
                         var shouldBeDetached = false;
                         foreach (var property in index.Properties)
                         {
-                            if (property is Property primitive
-                                && removedInheritedProperties.Contains(primitive))
+                            if (property is Property scalarProperty
+                                && property.DeclaringType is EntityType
+                                && removedInheritedProperties.Contains(scalarProperty))
                             {
-                                removedInheritedPropertiesToDuplicate.Add(primitive);
+                                removedInheritedPropertiesToDuplicate.Add(scalarProperty);
                                 shouldBeDetached = true;
                             }
                         }
@@ -2103,7 +2104,7 @@ public class InternalEntityTypeBuilder : InternalTypeBaseBuilder, IConventionEnt
     ///     doing so can result in application failures when updating to a new Entity Framework Core release.
     /// </summary>
     public virtual InternalIndexBuilder? HasIndex(IReadOnlyList<string> propertyNames, ConfigurationSource configurationSource)
-        => HasIndex(ToPropertyBaseList(GetOrCreateProperties(propertyNames, configurationSource)), configurationSource);
+        => HasIndex(propertyNames, name: null, configurationSource);
 
     /// <summary>
     ///     This is an internal API that supports the Entity Framework Core infrastructure and not subject to
@@ -2113,9 +2114,21 @@ public class InternalEntityTypeBuilder : InternalTypeBaseBuilder, IConventionEnt
     /// </summary>
     public virtual InternalIndexBuilder? HasIndex(
         IReadOnlyList<string> propertyNames,
-        string name,
+        string? name,
         ConfigurationSource configurationSource)
-        => HasIndex(ToPropertyBaseList(GetOrCreateProperties(propertyNames, configurationSource)), name, configurationSource);
+    {
+        var parsed = MatchComplexPathList(propertyNames);
+        if (parsed is null)
+        {
+            return null;
+        }
+
+        var (names, isCollection, collectionIndices) = parsed.Value;
+        var properties = GetOrCreateProperties(names, isCollection, configurationSource);
+        return properties is null
+            ? null
+            : HasIndex(properties, collectionIndices, name, configurationSource);
+    }
 
     /// <summary>
     ///     This is an internal API that supports the Entity Framework Core infrastructure and not subject to
@@ -2127,17 +2140,6 @@ public class InternalEntityTypeBuilder : InternalTypeBaseBuilder, IConventionEnt
         IReadOnlyList<MemberInfo> clrMembers,
         ConfigurationSource configurationSource)
         => HasIndex(ToPropertyBaseList(GetOrCreateProperties(clrMembers, configurationSource)), configurationSource);
-
-    /// <summary>
-    ///     This is an internal API that supports the Entity Framework Core infrastructure and not subject to
-    ///     the same compatibility standards as public APIs. It may be changed or removed without notice in
-    ///     any release. You should only use it directly in your code with extreme caution and knowing that
-    ///     doing so can result in application failures when updating to a new Entity Framework Core release.
-    /// </summary>
-    public virtual InternalIndexBuilder? HasIndex(
-        IReadOnlyList<IReadOnlyList<MemberInfo>> memberChains,
-        ConfigurationSource configurationSource)
-        => HasIndex(GetOrCreatePropertyBases(memberChains, configurationSource), configurationSource);
 
     /// <summary>
     ///     This is an internal API that supports the Entity Framework Core infrastructure and not subject to
@@ -2158,10 +2160,9 @@ public class InternalEntityTypeBuilder : InternalTypeBaseBuilder, IConventionEnt
     ///     doing so can result in application failures when updating to a new Entity Framework Core release.
     /// </summary>
     public virtual InternalIndexBuilder? HasIndex(
-        IReadOnlyList<IReadOnlyList<MemberInfo>> memberChains,
-        string name,
+        IReadOnlyList<PropertyBase>? properties,
         ConfigurationSource configurationSource)
-        => HasIndex(GetOrCreatePropertyBases(memberChains, configurationSource), name, configurationSource);
+        => HasIndex(properties, name: null, configurationSource);
 
     /// <summary>
     ///     This is an internal API that supports the Entity Framework Core infrastructure and not subject to
@@ -2171,70 +2172,38 @@ public class InternalEntityTypeBuilder : InternalTypeBaseBuilder, IConventionEnt
     /// </summary>
     public virtual InternalIndexBuilder? HasIndex(
         IReadOnlyList<PropertyBase>? properties,
+        string? name,
         ConfigurationSource configurationSource)
     {
-        if (properties == null)
+        if (name is not null)
         {
-            return null;
+            Check.NotEmpty(name);
         }
-
-        List<InternalIndexBuilder>? detachedIndexes = null;
-        var existingIndex = Metadata.FindIndex(properties);
-        if (existingIndex == null)
-        {
-            detachedIndexes = Metadata.FindDerivedIndexes(properties).ToList().Select(DetachIndex).ToList();
-        }
-        else if (existingIndex.DeclaringEntityType != Metadata)
-        {
-            return existingIndex.DeclaringEntityType.Builder.HasIndex(existingIndex, properties, null, configurationSource);
-        }
-
-        var indexBuilder = HasIndex(existingIndex, properties, null, configurationSource);
-
-        if (detachedIndexes != null)
-        {
-            foreach (var detachedIndex in detachedIndexes)
-            {
-                detachedIndex.Attach(detachedIndex.Metadata.DeclaringEntityType.Builder);
-            }
-        }
-
-        return indexBuilder;
-    }
-
-    /// <summary>
-    ///     This is an internal API that supports the Entity Framework Core infrastructure and not subject to
-    ///     the same compatibility standards as public APIs. It may be changed or removed without notice in
-    ///     any release. You should only use it directly in your code with extreme caution and knowing that
-    ///     doing so can result in application failures when updating to a new Entity Framework Core release.
-    /// </summary>
-    public virtual InternalIndexBuilder? HasIndex(
-        IReadOnlyList<PropertyBase>? properties,
-        string name,
-        ConfigurationSource configurationSource)
-    {
-        Check.NotEmpty(name);
 
         if (properties == null)
         {
             return null;
         }
 
-        List<InternalIndexBuilder>? detachedIndexes = null;
+        var existingIndex = name is null
+            ? Metadata.FindIndex(properties)
+            : Metadata.FindIndex(name);
 
-        var existingIndex = Metadata.FindIndex(name);
-        if (existingIndex != null
+        if (existingIndex is not null
+            && name is not null
             && !existingIndex.Properties.SequenceEqual(properties))
         {
-            // use existing index only if properties match
+            // use existing named index only if properties match
             existingIndex = null;
         }
 
+        List<InternalIndexBuilder>? detachedIndexes = null;
         if (existingIndex == null)
         {
-            detachedIndexes = Metadata.FindDerivedIndexes(name)
-                .Where(i => i.Properties.SequenceEqual(properties))
-                .ToList().Select(DetachIndex).ToList();
+            var derived = name is null
+                ? Metadata.FindDerivedIndexes(properties)
+                : Metadata.FindDerivedIndexes(name).Where(i => i.Properties.SequenceEqual(properties));
+            detachedIndexes = derived.ToList().Select(DetachIndex).ToList();
         }
         else if (existingIndex.DeclaringEntityType != Metadata)
         {
@@ -2299,6 +2268,75 @@ public class InternalEntityTypeBuilder : InternalTypeBaseBuilder, IConventionEnt
         string name,
         ConfigurationSource configurationSource)
         => HasIndex(ToPropertyBaseList(properties), name, configurationSource);
+
+    /// <summary>
+    ///     This is an internal API that supports the Entity Framework Core infrastructure and not subject to
+    ///     the same compatibility standards as public APIs. It may be changed or removed without notice in
+    ///     any release. You should only use it directly in your code with extreme caution and knowing that
+    ///     doing so can result in application failures when updating to a new Entity Framework Core release.
+    /// </summary>
+    /// <remarks>
+    ///     Configures an index whose leaves may traverse complex properties (including complex collections).
+    ///     <paramref name="collectionIndices" /> runs parallel to <paramref name="properties" />, holding the
+    ///     constant indexer values for each complex-collection segment on the path to each leaf.
+    /// </remarks>
+    public virtual InternalIndexBuilder? HasIndex(
+        IReadOnlyList<PropertyBase> properties,
+        IReadOnlyList<IReadOnlyList<int?>?>? collectionIndices,
+        string? name,
+        ConfigurationSource configurationSource)
+    {
+        // Walk the hierarchy looking for an existing index that exactly matches (properties, CollectionIndices),
+        // which together form the unnamed-index identity.
+        var existingIndex = name is null
+            ? Metadata.FindIndex(properties, collectionIndices)
+            : Metadata.FindIndex(name);
+
+        if (existingIndex is not null
+            && name is not null
+            && (!existingIndex.Properties.SequenceEqual(properties)
+                || !Index.CollectionIndicesEqual(existingIndex.CollectionIndices, collectionIndices)))
+        {
+            throw new InvalidOperationException(
+                CoreStrings.ConflictingNamedIndex(
+                    name,
+                    Metadata.DisplayName(),
+                    properties.Format()));
+        }
+
+        if (existingIndex is not null)
+        {
+            existingIndex.UpdateConfigurationSource(configurationSource);
+            return existingIndex.Builder;
+        }
+
+        // No matching index in the hierarchy. Detach equivalent indexes on derived types so they can be
+        // promoted to this type.
+        List<InternalIndexBuilder>? detachedIndexes = null;
+        var derivedCandidates = name is null
+            ? Metadata.FindDerivedIndexes(properties, collectionIndices)
+            : Metadata.FindDerivedIndexes(name).Where(i => i.Properties.SequenceEqual(properties)
+                && Index.CollectionIndicesEqual(i.CollectionIndices, collectionIndices));
+        var derivedToDetach = derivedCandidates.ToList();
+        if (derivedToDetach.Count > 0)
+        {
+            detachedIndexes = derivedToDetach.Select(DetachIndex).ToList();
+        }
+
+        var index = name is null
+            ? Metadata.AddIndex(properties, collectionIndices, configurationSource)
+            : Metadata.AddIndex(properties, collectionIndices, name, configurationSource);
+
+        if (detachedIndexes is not null)
+        {
+            foreach (var detachedIndex in detachedIndexes)
+            {
+                detachedIndex.Attach(detachedIndex.Metadata.DeclaringEntityType.Builder);
+            }
+        }
+
+        return index?.Builder;
+    }
 
     /// <summary>
     ///     This is an internal API that supports the Entity Framework Core infrastructure and not subject to

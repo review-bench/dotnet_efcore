@@ -139,10 +139,8 @@ public partial class RelationalModelValidatorTest : ModelValidatorTest
         var collectionProperty = entityType.FindComplexProperty(nameof(EntityWithComplexCollection.Items))!;
         entityType.AddIndex([collectionProperty], ConfigurationSource.Explicit);
 
-        VerifyError(
-            CoreStrings.IndexOnComplexCollection(
-                "{'Items'}", nameof(EntityWithComplexCollection), nameof(EntityWithComplexCollection.Items)),
-            modelBuilder);
+        // Indexing a JSON-mapped complex collection is valid for relational providers
+        Validate(modelBuilder);
     }
 
     public override void Detects_index_traversing_complex_collection()
@@ -256,6 +254,48 @@ public partial class RelationalModelValidatorTest : ModelValidatorTest
 
         var model = Validate(modelBuilder);
         var index = model.FindEntityType(typeof(SampleEntity))!.GetIndexes().Single();
+    }
+
+    [Fact]
+    public virtual void Passes_on_json_path_index_in_single_complex_collection()
+    {
+        var modelBuilder = CreateConventionModelBuilder();
+        modelBuilder.Entity<EntityWithComplexCollection>(b =>
+        {
+            b.HasKey(e => e.Id);
+            b.ComplexCollection(e => e.Items).ToJson();
+            b.HasIndex("Items[].Value");
+        });
+
+        var model = Validate(modelBuilder);
+        var index = model.FindEntityType(typeof(EntityWithComplexCollection))!.GetIndexes().Single();
+        Assert.Equal("Value", index.Properties.Single().Name);
+        Assert.Equal(new int?[] { null }, index.CollectionIndices.Single());
+    }
+
+    private sealed class EntityWithTwoJsonCollections
+    {
+        public int Id { get; set; }
+        public List<ComplexCollectionItem> ItemsA { get; set; } = [];
+        public List<ComplexCollectionItem> ItemsB { get; set; } = [];
+    }
+
+    [Fact]
+    public virtual void Detects_json_path_index_spanning_multiple_json_columns()
+    {
+        var modelBuilder = CreateConventionModelBuilder();
+        modelBuilder.Entity<EntityWithTwoJsonCollections>(b =>
+        {
+            b.HasKey(e => e.Id);
+            b.ComplexCollection(e => e.ItemsA).ToJson("ItemsAJson");
+            b.ComplexCollection(e => e.ItemsB).ToJson("ItemsBJson");
+            b.HasIndex("ItemsA[].Value", "ItemsB[].Value");
+        });
+
+        VerifyError(
+            RelationalStrings.JsonPathIndexPropertiesInDifferentJsonColumns(
+                "{'Value', 'Value'}", nameof(EntityWithTwoJsonCollections), "ItemsAJson", "ItemsBJson"),
+            modelBuilder);
     }
 
     [Fact]
