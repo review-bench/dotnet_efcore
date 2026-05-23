@@ -294,7 +294,14 @@ public class SqlServerMigrationsSqlGenerator : MigrationsSqlGenerator
 
         var narrowed = false;
         var oldColumnSupported = IsOldColumnSupported(model);
-        if (oldColumnSupported)
+
+        // SQL Server can't ALTER COLUMN on a computed column when the expression is unchanged; see #33425.
+        var computedColumnIsNoOp = operation.ComputedColumnSql != null
+            && operation.OldColumn.ComputedColumnSql != null
+            && operation.ComputedColumnSql == operation.OldColumn.ComputedColumnSql
+            && operation.IsStored == operation.OldColumn.IsStored;
+
+        if (oldColumnSupported && !computedColumnIsNoOp)
         {
             if (IsIdentity(operation) != IsIdentity(operation.OldColumn))
             {
@@ -357,14 +364,7 @@ public class SqlServerMigrationsSqlGenerator : MigrationsSqlGenerator
             || operation.Collation != operation.OldColumn.Collation
             || HasDifferences(newAnnotations, oldAnnotations);
 
-        // SQL Server cannot ALTER COLUMN on a computed column (the type is derived from the
-        // expression, not user-configurable). When source and target are both computed with the
-        // same expression and persistence (the drop+add path above didn't trigger), suppress
-        // the ALTER statement — type/precision/scale/nullability/collation/annotation diffs
-        // either don't apply or cannot be applied this way; emitting ALTER COLUMN would fail
-        // with "Cannot alter column ... because it is 'COMPUTED'". Comment changes are handled
-        // separately via sp_addextendedproperty below and still apply. See #33425.
-        if (operation.ComputedColumnSql != null && operation.OldColumn.ComputedColumnSql != null)
+        if (computedColumnIsNoOp)
         {
             alterStatementNeeded = false;
         }
