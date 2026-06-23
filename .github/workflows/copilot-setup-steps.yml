@@ -54,7 +54,7 @@ jobs:
           --health-timeout=5s
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Restore .NET SDK
         continue-on-error: true
